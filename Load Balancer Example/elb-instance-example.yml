@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  KeyName:
+    Description: Pre existing SSH Key Pair Name
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: samp
+  InstanceType:
+    Description: Instance Type
+    Type: String
+    Default: t2.micro
+  InstanceId:
+    Description: AMI ID
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Resources:
+  myVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: SampVPC
+  subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: 'us-east-1a'
+      VpcId: !Ref 'myVPC'
+      CidrBlock: 10.0.1.0/24
+      Tags:
+        - Key: Name
+          Value: MySubnet
+  subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: 'us-east-1b'
+      VpcId: !Ref 'myVPC'
+      CidrBlock: 10.0.2.0/24
+      Tags:
+        - Key: Name
+          Value: MySubnet2
+  igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: keyname
+          Value: value
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'myVPC'
+      InternetGatewayId: !Ref 'igw'
+  routeTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'myVPC'
+      Tags:
+        - Key: Name
+          Value: SampRT
+  routeName:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'routeTable'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'igw'
+  routeTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'subnet'
+      RouteTableId: !Ref 'routeTable'
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SG1
+      GroupDescription: SSH and HTTP
+      VpcId: !Ref 'myVPC'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+  ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref 'KeyName' 
+      ImageId: !Ref 'InstanceId'
+      InstanceType: !Ref 'InstanceType'
+      SubnetId: !Ref 'subnet'
+      SecurityGroupIds: [ 
+        !Ref 'InstanceSecurityGroup' 
+      ]
+      UserData: !Base64 |
+        #!/bin/bash
+        yum update -y
+        yum install -y httpd
+        touch /var/www/html/health.html
+        service httpd start
+      Tags:
+        - Key: Name
+          Value: CloudFormation Instance
+  myTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /health.html
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: SampTG
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      Targets: [ 
+        Id: !Ref 'ec2Instance' 
+      ]
+      VpcId: !Ref 'myVPC'
+  ElasticLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Name: SampLB
+      SecurityGroups: [ 
+        !Ref 'InstanceSecurityGroup' 
+      ]
+      Subnets: [
+        !Ref 'subnet',
+        !Ref 'subnet2'
+      ]
+      Type: application
+  ELBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'myTargetGroup'
+      LoadBalancerArn: !Ref 'ElasticLB'
+      Port: 80
+      Protocol: HTTP
+
+Outputs:
+  LBDNS:
+    Description: Load Balancer DNS
+    Value: !GetAtt [ElasticLB, DNSName]
